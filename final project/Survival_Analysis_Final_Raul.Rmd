@@ -1,0 +1,240 @@
+---
+title: "Survival Analysis Final"
+output: pdf_document
+date: "2024-12-11"
+---
+
+
+```{r, echo=FALSE, warning=FALSE, include=FALSE}
+options(tinytex.verbose = FALSE)
+library(tibble)
+library(dplyr)
+library(survival)
+setwd("/Users/raul_torres_aragon/Library/CloudStorage/GoogleDrive-rdtaragon@gmail.com/My Drive/Stat Courses/_Survival Analysis/GU_Fang/hw")
+load('survival_env.RData')
+
+```
+
+## Question 2.
+Consider interval censored data
+
+$$
+\{(L_i, R_i, Z_i), L_i < T_i \leq R_i, i = 1, \dots,n\}
+$$ 
+
+
+where $Z_i$ is a covariate matrix  
+Assume that the failure time $T$ has a Cox proportional hazards model and its hazard function is given by  
+
+$$
+\lambda(t) = \lambda_0(t) \exp\{ Z_i^T \boldsymbol{\beta}\}
+$$  
+
+where $\lambda_0(t)$ is the baseline hazard function.  
+To estimate $\lambda_0(t)$ and $\boldsymbol{\beta}$, an iterative algorithm is proposed:  
+
+1. Obtain $\hat{\boldsymbol{\beta}}^{(1)}$ and $\hat{\Lambda}_0^{(1)}(t)$ by partial likelihood method. 
+2. For each subject $i$ obtain function $f_i^{(1)}(t) = \hat{\lambda}^{(1)}_0(t) \exp\{ Z_i^T \hat{\boldsymbol{\beta}}^{(1)}\} \exp\{ \hat{\Lambda_0^{(1)}}(t) \exp\{Z_i^T \hat{\boldsymbol{\beta}}^{(1)}\}\}$. 
+3. Define new failure time $T^{(1)}_i = \text{argmax} \{f_i^{(1)}\}_{t \in(L_i, R_i]}$ if $R_i < \infty$ and $T^{(1)}_i > L_i$ if $R_i = \infty$, and obtain $\hat{\boldsymbol{\beta}}^{(2)}$ and $\hat{\Lambda}_0^{(2)}(t)$ by partial likelihood method.  
+4. Repeat steps 2 and 3 until $\hat{\boldsymbol{\beta}}^{(k)}$ and $\hat{\Lambda}_0^{(k)}(t)$ are convergent. 
+
+Set $\hat{\boldsymbol{\beta}} = \hat{\boldsymbol{\beta}}^{(k)}$ and $\hat{\Lambda}_0(t) = \hat{\Lambda}_0^{(k)}(t)$. 
+
+
+First, I simulate interval censored data with Cox PH exponential: 
+
+```
+# Simulate a dataset
+# ------------------
+sim_interval_censored_data <- function(n, beta_true, cr) {
+    Z <- rnorm(n)
+    L <- rexp(n, rate = exp(Z * beta_true))
+    R <- L + rexp(n, rate = 1)
+    status <- ifelse(runif(n) < cr, 1, 0) 
+    R[status == 0] <- Inf 
+    data <- data.frame(L=L, R=R, Z=Z, status=status)
+    data
+}
+```
+
+Then, I implement the above-described algorithm:
+
+```
+# Iterative algorithm
+# -------------------
+iterative_algo <- function(data, max_iter = 30, tol = 1e-4, verbose = FALSE) {
+  L <- data$L
+  R <- data$R
+  Z <- data$Z
+  status <- data$status
+  n <- nrow(data)
+  
+  # Step 1: Initial Cox PH model to estimate beta and Lambda_0(t)
+  initial_cox <- coxph(Surv(L, status) ~ Z, data = data)
+  beta <- coef(initial_cox)
+  basehaz <- basehaz(initial_cox, centered = FALSE)
+  time_points <- basehaz$time
+  Lambda_0 <- basehaz$hazard
+  
+  # Calculate likelihood f_i(t) for each subject
+  compute_likelihood <- function(t, Lambda_0, beta, Z, L, R, i) {
+    idx <- which.min(abs(t - time_points))  # Find closest Lambda_0(t)
+    lambda_0_t <- ifelse(idx <= length(Lambda_0), Lambda_0[idx], 0)
+    Lambda_0_t <- ifelse(idx <= length(Lambda_0), sum(Lambda_0[1:idx]), 0)
+    exp_Z_beta <- exp(Z[i] * beta)
+    lambda_0_t * exp_Z_beta * exp(-Lambda_0_t * exp_Z_beta)
+  }
+  
+  # Step 2: Iterative updates of T, beta, and Lambda_0
+  for (iter in 1:max_iter) {
+    T <- numeric(n)  # New failure times
+    
+    for (i in 1:n) {
+      # Define search range for T_i
+      t_range <- if (R[i] < Inf) {
+        time_points[time_points > L[i] & time_points <= R[i]]
+      } else {
+        time_points[time_points > L[i]]
+      }
+      
+      # Calculate likelihood f_i(t) for all t in range
+      # T_i = argmax(f_i(t)) if R < Inf
+      # T_i > L_i for R = Inf, set 
+      if (length(t_range) > 0) {
+        f_t <- sapply(t_range, compute_likelihood, Lambda_0, beta, Z, L, R, i)
+        T[i] <- t_range[which.max(f_t)]  
+      } else {
+        T[i] <- L[i] + .001  
+      }
+    }
+    
+    # Update data with new failure times
+    new_data <- data
+    new_data$status <- 1  # All events are considered uncensored since we predicted all Ts
+    new_data$L <- T
+    new_data$R <- T
+    
+    # Step 3: Estimate Cox PH model with updated failure times
+    cox_model <- coxph(Surv(L, status) ~ Z, data = new_data)
+    beta_new <- coef(cox_model)
+    basehaz <- basehaz(cox_model, centered = FALSE)
+    Lambda_0_new <- basehaz$hazard
+    
+    # Step 4: Convergence check
+    beta_diff <- abs(beta_new - beta)
+    if (beta_diff < tol) {
+      if(verbose==TRUE) print(paste0("Converged after", iter, "iterations.\n"))
+      break
+    }
+    
+    # Update parameters for next iteration
+    beta <- beta_new
+    Lambda_0 <- Lambda_0_new
+  }
+  
+  # Output results
+  list(beta = beta, Lambda_0 = Lambda_0, time_points = basehaz$time, iterations = iter)
+}
+```
+
+and lastly, I simulate 500 runs for each hyperparameter set with $\beta = 1.5$.  
+I test it with censoring rate at (0.3, 0.5, and 0.7), and with sample size at 30, 100, and 500.  
+
+```
+N <- 500
+run_sim <- function(N, n, beta_true, event_prob) {
+    
+    beta_hats <- numeric(N)
+    for(i in 1:N) {
+      data <- sim_interval_censored_data(n = n, beta_true = beta_true, cr = 1-event_prob)
+      res <- iterative_algo(data = data)
+      beta_hats[i] <- res$beta
+    }
+    res_tab <- data.frame(true_beta = beta_true, beta_hat = beta_hats)
+
+    return <- tibble(mean_beta_hat = mean(res_tab$beta_hat, na.rm = TRUE), 
+                     sd_beta_hat = sd(res_tab$beta_hat, na.rm = TRUE))
+    return$coverage <- as.numeric(
+      ((return$mean_beta_hat - 1.96*return$sd_beta_hat) <= beta_true) & 
+      (beta_true <= (return$mean_beta_hat + 1.96*return$sd_beta_hat))
+    )
+    return
+}
+    
+
+res_tab <- tibble(n=numeric(), 
+                  cens_prob=numeric(), 
+                  mean_beta_hat=numeric(), 
+                  sd_beta_hat=numeric(), 
+                  coverage=numeric())
+
+ns <- c(30, 100, 300)
+evs <- c(0.3, 0.5, 0.7)
+for(ev in evs) {
+  for(n in ns) {
+      print(paste0("cr=", 1-ev, ";  n=", n))
+      row <- run_sim(N=N, n=n, beta_true=beta_true, event_prob=ev) |> 
+             as_tibble() |> 
+             mutate(n=n, cens_rate=1-ev)
+      res_tab <- rbind(res_tab, row)
+  }
+}
+res_tab <- res_tab[, c("cens_rate","n","mean_beta_hat","sd_beta_hat")]
+```
+
+## (a)  
+Denote the true values of $\beta$ and $\Lambda_0(t)$.  
+Does $\hat{\beta} \to \beta$, and $\hat{\Lambda}_0(t) \to \Lambda_0(t)$?  
+
+Recall that the true $\beta=1.5$. 
+After running the above simulations, we get:  
+
+```{r, echo = FALSE}
+mytable <-res_tab[, c("cens_prob", "n","mean_beta_hat")]
+knitr::kable(arrange(mytable, cens_prob, n), digits = c(1,0,2))
+```
+
+
+As can be seen from the table, the iterative algorithm correctly estimates $\beta$ and 
+as expected, as the sample size increases it approaches the true value of $\beta$ 
+It also seems to over estimate, when sample size is small, never under estimate.  
+
+The following plots show $\hat{\Lambda}_0(t)$ in 20 simulations per hyperparameter set.
+
+
+```{r, fig.align='center', fig.width=60, out.width="64%", echo=FALSE}
+knitr::include_graphics("/Users/raul_torres_aragon/Library/CloudStorage/GoogleDrive-rdtaragon@gmail.com/My Drive/Stat Courses/_Survival Analysis/GU_Fang/hw/Lambda_0_plot.jpeg")
+```
+
+As we can see, the estimated $\Lambda_0(t)$ do seem to hug the true $\Lambda_0(t)$ in this example.
+As the sample size $n$ increase, we see that $\hat{\Lambda}_0(t)$s don't get tighter around $\Lambda_0(t)$, 
+weakening the credibility of asymptotic unbiasedness of $\hat{\Lambda}_0(t)$.  
+
+
+## (b)  
+Estimate the asymptotic variances of $\hat{\beta}$ and $\hat{\Lambda}_0(t)$  
+
+Taking the standard deviation of our simulations for a given parameter set yields a 
+bootstrap estimate of the variances of $\hat{\beta}$.  
+From the table one can see that the estimate is more precise (i.e. less variance) as the sample 
+size grows large. This lends credibility to the notion that the iterative algorithm is asymptotically efficient. 
+
+
+```{r, echo = FALSE}
+mytable <-res_tab[, c("cens_prob", "n","mean_beta_hat", "sd_beta_hat")]
+knitr::kable(arrange(mytable, cens_prob, n), digits = c(1,0,2,3))
+```
+
+## (c)  
+Compare results by Huang's method (Annals of Statistics pp. 540-568; 1996)
+
+Huang's method provides an efficient approach to extend Cox proportional hazard model to
+interval censrored data--which intruduces uncertainty since the event time is not registered 
+directly, but registered within an interval of time. 
+It seems that Huang's method differs in that it's weighted and it starts off with a Weibull 
+baseline risk hazard. The above code does not start off with Weibull parametric approach for the 
+baseline hazard risk nor does it weigh risk at each iteration; however it achieves unbiasedness, at 
+least from what this simulation showed.  
+
+
+
