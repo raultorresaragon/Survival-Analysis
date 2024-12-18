@@ -1,0 +1,68 @@
+---
+title: |-
+  Survival Analysis
+  Homework 1
+author: "Raul Torres Aragon"
+date: "2024-08-29"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(survival)
+library(ggsurvfit)
+library(dplyr)
+```
+
+
+## (Q1)
+
+```{r, out.width = "60%", fig.align = "center"}
+knitr::include_graphics("survival_hw1p1.png")
+```
+
+
+## (Q2.1)
+
+`time` = survival time.  
+`status` (=1) censored indicator.  
+Use `sex` as group indicator,  
+
+Test if the survival curves for the two groups are the same.  
+
+```{r, out.width = "60%", fig.align = "center"}
+survfit2(Surv(time, status) ~ sex, data = lung) |> 
+  ggsurvfit() +
+  labs(
+    x = "Time (in days)",
+    y = "Survival probability"
+  ) + 
+  add_confidence_interval()
+```
+
+Visually, there appears to be a difference between the survival probabilities of
+men and women.  
+Let's do a formal KM test. 
+
+```{r}
+myfit <- survdiff(Surv(time, status) ~ sex, data = lung)
+(myfit)
+```
+
+We can see that the difference between the two survival curves seems to be statistically significant with a log-rank test with a critical test statistic of 10.3 ($pval < 0.05$).
+
+
+
+
+## (Q2.2). 
+Give the KM estimator of the survival function and its 95% confidence intervals
+
+```{r}
+summary(survfit(Surv(time, status) ~ sex, data = lung))
+```
+
+
+
